@@ -9,9 +9,9 @@ using Xunit;
 
 namespace RavenDbProjection
 {
-    public class RavenDbSimpleProjectionNotLoadingValuesFromEntities : RavenTestDriver
+    public class IndexStoreFields : RavenTestDriver
     {
-        static RavenDbSimpleProjectionNotLoadingValuesFromEntities()
+        static IndexStoreFields()
         {
             ConfigureServer(new TestServerOptions
             {
@@ -20,16 +20,20 @@ namespace RavenDbProjection
         }
 
         [Fact]
-        public async Task ProjectionFlatteningNotworkingForSimpleSelections()
+        public async Task Do()
         {
-            var store = base.GetDocumentStore();
+            var store = GetDocumentStore();
+
             var id = "myEntity/1";
+            var entityValue = 10;
             var value = 100;
 
             var e = new MyEntity
             {
                 Id = id,
                 Name = "Test",
+                EntityValue = entityValue,
+                EntityValue2 = entityValue,
                 Details = new MyEntity.EntityDetails
                 {
                     Description = "Test Description",
@@ -39,21 +43,23 @@ namespace RavenDbProjection
 
             using (var s = store.OpenAsyncSession())
             {
-                await new MyEntityIndex().ExecuteAsync(store);
+                await new MyEntityIndexStore().ExecuteAsync(store);
                 await s.StoreAsync(e);
                 await s.SaveChangesAsync();
             }
 
+            WaitForIndexing(store);
+
             using (var s = store.OpenAsyncSession())
             {
                 var r1 = await Query1_OK(s);
-                Assert.Collection(r1, a => Assert.Equal(value, a.Details_Value));
+                Assert.Collection(r1, a => Assert.Equal(entityValue, a.EntityValue));
+                Assert.Collection(r1, a => Assert.Equal(entityValue, a.EntityValue2));
 
-                var r2 = await Query2_OK(s);
+                var r2 = await FromIndex_field_not_stored_on_index_should_be_loaded_from_document(s);
+                Assert.Collection(r2, a => Assert.Equal(entityValue, a.EntityValue));
+                Assert.Collection(r2, a => Assert.Equal(entityValue, a.EntityValue2));
                 Assert.Collection(r2, a => Assert.Equal(value, a.Details_Value));
-
-                var r3 = await Query3_NOK(s);
-                Assert.Collection(r3, a => Assert.Equal(value, a.Details_Value));
             }
         }
 
@@ -63,35 +69,24 @@ namespace RavenDbProjection
             {
                 Id = r.Id,
                 Name = r.Name,
+                EntityValue = r.EntityValue,
+                EntityValue2 = r.EntityValue2,
                 Details_Description = r.Details.Description,
                 Details_Value = r.Details.Value
             });
             return await q.ToArrayAsync();
         }
 
-        async Task<MyEntityDto[]> Query2_OK(IAsyncDocumentSession s)
+        async Task<MyEntityDto[]> FromIndex_field_not_stored_on_index_should_be_loaded_from_document(IAsyncDocumentSession s)
         {
-            var q = s.Query<MyEntity, MyEntityIndex>();
-            var p = from r in q
-                    let dummyUselessLoadJustToMakeItWork = RavenQuery.Load<object>("none")
+            var q = s.Query<MyEntity, MyEntityIndexStore>();
+            var p = from r in q.Customize(r=> r.Projection(ProjectionBehavior.FromIndex))
                     select new MyEntityDto
                     {
                         Id = r.Id,
                         Name = r.Name,
-                        Details_Description = r.Details.Description,
-                        Details_Value = r.Details.Value
-                    };
-            return await p.ToArrayAsync();
-        }
-
-        async Task<MyEntityDto[]> Query3_NOK(IAsyncDocumentSession s)
-        {
-            var q = s.Query<MyEntity, MyEntityIndex>();
-            var p = from r in q.Customize(r=> r.Projection(ProjectionBehavior.FromDocument))
-                    select new MyEntityDto
-                    {
-                        Id = r.Id,
-                        Name = r.Name,
+                        EntityValue = r.EntityValue,
+                        EntityValue2 = r.EntityValue2,
                         Details_Description = r.Details.Description,
                         Details_Value = r.Details.Value
                     };
@@ -100,19 +95,20 @@ namespace RavenDbProjection
     }
 
 
-
-    public class MyEntityIndex : AbstractIndexCreationTask<MyEntity>
+    class MyEntityIndexStore : AbstractIndexCreationTask<MyEntity>
     {
-        public MyEntityIndex()
+        public MyEntityIndexStore()
         {
             Map = entities => from e in entities
                               select new
                               {
                                   Id = e.Id,
                                   EntityValue = e.EntityValue,
+                                  EntityValue2 = e.EntityValue2,
                                   Search = new object[] { e.Name, e.Details.Description }
                               };
 
+            Store("EntityValue", FieldStorage.Yes);
             Index("Search", FieldIndexing.Search);
         }
     }
